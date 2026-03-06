@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import fsAsync from "node:fs/promises";
 import path from "node:path";
 import { CURRENT_SESSION_VERSION } from "@mariozechner/pi-coding-agent";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
@@ -742,6 +743,7 @@ export const chatHandlers: GatewayRequestHandlers = {
         fileName?: string;
         content?: unknown;
       }>;
+      contextFiles?: string[];
       timeoutMs?: number;
       idempotencyKey: string;
     };
@@ -779,6 +781,31 @@ export const chatHandlers: GatewayRequestHandlers = {
       } catch (err) {
         respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, String(err)));
         return;
+      }
+    }
+    // Inject checked context files content into the message
+    if (Array.isArray(p.contextFiles) && p.contextFiles.length > 0) {
+      const contextBlocks: string[] = [];
+      for (const relPath of p.contextFiles) {
+        // Security: only allow paths under uploads/ and prevent path traversal
+        const normalized = path.normalize(relPath).replace(/^(\.\.\/)+/, "");
+        if (!normalized.startsWith("uploads/")) {
+          continue;
+        }
+        try {
+          // Resolve relative to agent workspace
+          const { DEFAULT_AGENT_WORKSPACE_DIR } = await import("../../agents/workspace.js");
+          const fullPath = path.join(DEFAULT_AGENT_WORKSPACE_DIR, normalized);
+          const content = await fsAsync.readFile(fullPath, "utf-8");
+          const filename = path.basename(normalized);
+          contextBlocks.push(`[File: ${filename}]\n${content}`);
+        } catch {
+          // Skip files that can't be read silently
+        }
+      }
+      if (contextBlocks.length > 0) {
+        const contextSection = `<context>\n${contextBlocks.join("\n\n")}\n</context>`;
+        parsedMessage = parsedMessage ? `${contextSection}\n\n${parsedMessage}` : contextSection;
       }
     }
     const rawSessionKey = p.sessionKey;

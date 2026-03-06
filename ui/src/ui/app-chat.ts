@@ -22,6 +22,10 @@ export type ChatHost = {
   hello: GatewayHelloOk | null;
   chatAvatarUrl: string | null;
   refreshSessionsAfterChat: Set<string>;
+  /** All uploaded file entries (all agents) */
+  uploadedFiles: import("./ui-types.ts").UploadedFileEntry[];
+  /** Checked workspace paths per agentId */
+  checkedFilePaths: Map<string, Set<string>>;
 };
 
 export const CHAT_SESSIONS_ACTIVE_MINUTES = 120;
@@ -104,7 +108,18 @@ async function sendChatMessageNow(
   },
 ) {
   resetToolStream(host as unknown as Parameters<typeof resetToolStream>[0]);
-  const runId = await sendChatMessage(host as unknown as OpenClawApp, message, opts?.attachments);
+  // Resolve checked context files for current agent
+  const agentId = resolveAgentIdForSession(host);
+  const checkedPaths = agentId
+    ? (host.checkedFilePaths?.get(agentId) ?? new Set<string>())
+    : new Set<string>();
+  const contextFiles = Array.from(checkedPaths);
+  const runId = await sendChatMessage(
+    host as unknown as OpenClawApp,
+    message,
+    opts?.attachments,
+    contextFiles.length > 0 ? contextFiles : undefined,
+  );
   const ok = Boolean(runId);
   if (!ok && opts?.previousDraft != null) {
     host.chatMessage = opts.previousDraft;

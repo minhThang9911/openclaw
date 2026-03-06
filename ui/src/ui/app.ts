@@ -82,7 +82,12 @@ import type {
   StatusSummary,
   NostrProfile,
 } from "./types.ts";
-import { type ChatAttachment, type ChatQueueItem, type CronFormState } from "./ui-types.ts";
+import {
+  type ChatAttachment,
+  type ChatQueueItem,
+  type CronFormState,
+  type UploadedFileEntry,
+} from "./ui-types.ts";
 import { generateUUID } from "./uuid.ts";
 import type { NostrProfileFormState } from "./views/channels.nostr-profile-form.ts";
 
@@ -151,6 +156,9 @@ export class OpenClawApp extends LitElement {
   @state() chatThinkingLevel: string | null = null;
   @state() chatQueue: ChatQueueItem[] = [];
   @state() chatAttachments: ChatAttachment[] = [];
+  @state() uploadedFiles: UploadedFileEntry[] = [];
+  @state() checkedFilePaths: Map<string, Set<string>> = new Map();
+  @state() uploadingFiles = false;
   @state() chatManualRefreshInFlight = false;
   // Sidebar state for tool output viewing
   @state() sidebarOpen = false;
@@ -613,6 +621,182 @@ export class OpenClawApp extends LitElement {
     const newRatio = Math.max(0.4, Math.min(0.7, ratio));
     this.splitRatio = newRatio;
     this.applySettings({ ...this.settings, splitRatio: newRatio });
+  }
+
+  /** Load uploaded files for the given agentId from the server */
+  async handleLoadUploadedFiles(agentId: string) {
+    try {
+      const base = this.basePath ?? "";
+      const url = `${base}/api/files/list?agentId=${encodeURIComponent(agentId)}`;
+      const headers: Record<string, string> = { Accept: "application/json" };
+      if (this.password) {
+        headers["Authorization"] = `Bearer ${this.password}`;
+      }
+      const res = await fetch(url, { headers });
+      if (!res.ok) {
+        return;
+      }
+      const data = (await res.json()) as { files?: UploadedFileEntry[] };
+      const incoming = data.files ?? [];
+      // Merge with uploading entries (keep uploading status entries)
+      this.uploadedFiles = [
+        ...this.uploadedFiles.filter((f) => f.agentId === agentId && f.status === "uploading"),
+        ...incoming.map((f) => ({ ...f, status: "ready" as const })),
+      ];
+    } catch {
+      // Silently ignore — sidebar just won't refresh
+    }
+  }
+
+  /** Toggle a file checkbox — adds/removes workspacePath from checkedFilePaths for the agentId */
+  handleFileToggle(workspacePath: string, agentId: string, checked: boolean) {
+    const map = new Map(this.checkedFilePaths);
+    const set = new Set(map.get(agentId) ?? []);
+    if (checked) {
+      set.add(workspacePath);
+    } else {
+      set.delete(workspacePath);
+    }
+    map.set(agentId, set);
+    this.checkedFilePaths = map;
+  }
+
+  /** Delete an uploaded file on the server and from local state */
+  async handleFileDelete(fileId: string, agentId: string) {
+    try {
+      const base = this.basePath ?? "";
+      const headers: Record<string, string> = {};
+      if (this.password) {
+        headers["Authorization"] = `Bearer ${this.password}`;
+      }
+      await fetch(
+        `${base}/api/files/${encodeURIComponent(fileId)}?agentId=${encodeURIComponent(agentId)}`,
+        { method: "DELETE", headers },
+      );
+    } catch {
+      // Ignore errors; remove from local state anyway
+    }
+    this.uploadedFiles = this.uploadedFiles.filter(
+      (f) => !(f.fileId === fileId && f.agentId === agentId),
+    );
+    // Also uncheck if it was checked
+    const map = new Map(this.checkedFilePaths);
+    const set = new Set(map.get(agentId) ?? []);
+    const entry = this.uploadedFiles.find((f) => f.fileId === fileId && f.agentId === agentId);
+    if (entry) {
+      set.delete(entry.workspacePath);
+      map.set(agentId, set);
+      this.checkedFilePaths = map;
+    }
+  }
+
+  /** Trigger browser file picker for uploading. agentId is resolved from session. */
+  handleInitiateUpload(agentId: string) {
+    // Reuse or create a hidden file input
+    let input = this.shadowRoot?.querySelector(
+      "input[data-file-upload]",
+    ) as HTMLInputElement | null;
+    if (!input) {
+      input = Object.assign(document.createElement("input"), {
+        type: "file",
+        multiple: true,
+        accept: ".docx,.xlsx,.xls,.pdf,.txt,.md,.csv,.xml",
+        style: "display:none",
+      });
+      input.setAttribute("data-file-upload", "1");
+      input.setAttribute("data-agent-id", agentId);
+      document.body.appendChild(input);
+      input.addEventListener("change", () => this.handleFileInputChange(input!, agentId));
+    } else {
+      input.setAttribute("data-agent-id", agentId);
+      input.value = ""; // reset so same file can be re-selected
+    }
+    input.click();
+  }
+
+  /** Handle files selected via the hidden input */
+  async handleFileInputChange(input: HTMLInputElement, agentId: string) {
+    const files = Array.from(input.files ?? []);
+    if (!files.length) {
+      return;
+    }
+
+    const MAX_FILES = 5;
+    const MAX_BYTES = 50 * 1024 * 1024;
+
+    // Validate client-side first
+    if (files.length > MAX_FILES) {
+      alert(`Tối đa ${MAX_FILES} file mỗi lần upload. Bạn đã chọn ${files.length} file.`);
+      return;
+    }
+    const tooBig = files.find((f) => f.size > MAX_BYTES);
+    if (tooBig) {
+      alert(`File "${tooBig.name}" vượt quá giới hạn 50MB.`);
+      return;
+    }
+
+    // Add placeholder "uploading" entries
+    const placeholders: UploadedFileEntry[] = files.map((f) => ({
+      fileId: `uploading-${f.name}-${Date.now()}`,
+      agentId,
+      originalName: f.name,
+      savedName: f.name,
+      workspacePath: "",
+      sizeBytes: f.size,
+      convertedFrom: f.name.split(".").pop() ?? "",
+      status: "uploading" as const,
+    }));
+    this.uploadedFiles = [
+      ...this.uploadedFiles.filter((f) => f.agentId !== agentId || f.status !== "uploading"),
+      ...placeholders,
+    ];
+    this.uploadingFiles = true;
+
+    try {
+      const formData = new FormData();
+      formData.append("agentId", agentId);
+      for (const file of files) {
+        formData.append("files", file, file.name);
+      }
+      const base = this.basePath ?? "";
+      const headers: Record<string, string> = {};
+      if (this.password) {
+        headers["Authorization"] = `Bearer ${this.password}`;
+      }
+      const res = await fetch(`${base}/api/files/upload`, {
+        method: "POST",
+        headers,
+        body: formData,
+      });
+      const json = (await res.json()) as {
+        files?: UploadedFileEntry[];
+        errors?: Array<{ originalName: string; error: string }>;
+      };
+      // Remove placeholders and add real results
+      this.uploadedFiles = [
+        ...this.uploadedFiles.filter((f) => f.status !== "uploading"),
+        ...(json.files ?? []).map((f) => ({ ...f, status: "ready" as const })),
+        ...(json.errors ?? []).map((e) => ({
+          fileId: `error-${e.originalName}-${Date.now()}`,
+          agentId,
+          originalName: e.originalName,
+          savedName: e.originalName,
+          workspacePath: "",
+          sizeBytes: 0,
+          convertedFrom: "",
+          status: "error" as const,
+          errorMessage: e.error,
+        })),
+      ];
+    } catch (err) {
+      // Mark all placeholders as error
+      this.uploadedFiles = this.uploadedFiles.map((f) =>
+        f.status === "uploading" ? { ...f, status: "error", errorMessage: String(err) } : f,
+      );
+    } finally {
+      this.uploadingFiles = false;
+      input.value = "";
+    }
   }
 
   render() {

@@ -1073,6 +1073,24 @@ export function renderApp(state: AppViewState) {
                 onSplitRatioChange: (ratio: number) => state.handleSplitRatioChange(ratio),
                 assistantName: state.assistantName,
                 assistantAvatar: state.assistantAvatar,
+                // Uploaded files sidebar
+                agentId: (() => {
+                  const parsed = parseAgentSessionKey(state.sessionKey);
+                  return (
+                    parsed?.agentId ??
+                    state.agentsList?.defaultId ??
+                    state.agentsList?.agents?.[0]?.id ??
+                    "main"
+                  );
+                })(),
+                uploadedFiles: state.uploadedFiles,
+                checkedFilePaths: state.checkedFilePaths,
+                uploadingFiles: state.uploadingFiles,
+                onFileToggle: (workspacePath, agentId, checked) =>
+                  state.handleFileToggle(workspacePath, agentId, checked),
+                onFileDelete: (fileId, agentId) => state.handleFileDelete(fileId, agentId),
+                onInitiateUpload: (agentId) => state.handleInitiateUpload(agentId),
+                onLoadUploadedFiles: (agentId) => state.handleLoadUploadedFiles(agentId),
               })
             : nothing
         }

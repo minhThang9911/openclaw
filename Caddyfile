@@ -1,0 +1,6 @@
+:443 {
+	tls /etc/caddy/certs/openclaw-ip.crt /etc/caddy/certs/openclaw-ip.key
+	reverse_proxy openclaw-gateway:18789 {
+		header_up X-Forwarded-For {remote_host}
+	}
+}

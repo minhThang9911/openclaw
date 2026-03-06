@@ -30,7 +30,7 @@ import type {
   ToolsCatalogResult,
   StatusSummary,
 } from "./types.ts";
-import type { ChatAttachment, ChatQueueItem } from "./ui-types.ts";
+import type { ChatAttachment, ChatQueueItem, UploadedFileEntry } from "./ui-types.ts";
 import type { NostrProfileFormState } from "./views/channels.nostr-profile-form.ts";
 import type { SessionLogEntry } from "./views/usage.ts";
 
@@ -257,6 +257,10 @@ export type AppViewState = {
     updateAvailable: import("./types.js").UpdateAvailable | null;
     client: GatewayBrowserClient | null;
     refreshSessionsAfterChat: Set<string>;
+    uploadedFiles: UploadedFileEntry[];
+    /** workspacePaths checked for context injection, keyed by agentId */
+    checkedFilePaths: Map<string, Set<string>>;
+    uploadingFiles: boolean;
     connect: () => void;
     setTab: (tab: Tab) => void;
     setTheme: (theme: ThemeMode, context?: ThemeTransitionContext) => void;
@@ -318,4 +322,8 @@ export type AppViewState = {
     handleOpenSidebar: (content: string) => void;
     handleCloseSidebar: () => void;
     handleSplitRatioChange: (ratio: number) => void;
+    handleFileToggle: (workspacePath: string, agentId: string, checked: boolean) => void;
+    handleFileDelete: (fileId: string, agentId: string) => Promise<void>;
+    handleInitiateUpload: (agentId: string) => void;
+    handleLoadUploadedFiles: (agentId: string) => Promise<void>;
   };

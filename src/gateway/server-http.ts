@@ -27,6 +27,7 @@ import {
   handleControlUiHttpRequest,
   type ControlUiRootState,
 } from "./control-ui.js";
+import { handleFileUploadRequest } from "./file-upload-http.js";
 import { applyHookMappings } from "./hooks-mapping.js";
 import {
   extractHookToken,
@@ -589,6 +590,13 @@ export function createGatewayHttpServer(opts: {
         {
           name: "slack",
           run: () => handleSlackHttpRequest(req, res),
+        },
+        {
+          name: "file-upload",
+          run: () =>
+            handleFileUploadRequest(req, res, {
+              auth: resolvedAuth,
+            }),
         },
       ];
       if (openResponsesEnabled) {

@@ -4,6 +4,21 @@ export type ChatAttachment = {
   mimeType: string;
 };
 
+export type UploadedFileStatus = "uploading" | "ready" | "error";
+
+export type UploadedFileEntry = {
+  fileId: string;
+  agentId: string;
+  originalName: string;
+  savedName: string;
+  /** Relative workspace path e.g. "uploads/main/report.md" */
+  workspacePath: string;
+  sizeBytes: number;
+  convertedFrom: string;
+  status: UploadedFileStatus;
+  errorMessage?: string;
+};
+
 export type ChatQueueItem = {
   id: string;
   text: string;

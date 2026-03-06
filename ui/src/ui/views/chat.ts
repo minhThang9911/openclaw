@@ -11,7 +11,8 @@ import { icons } from "../icons.ts";
 import { detectTextDirection } from "../text-direction.ts";
 import type { SessionsListResult } from "../types.ts";
 import type { ChatItem, MessageGroup } from "../types/chat-types.ts";
-import type { ChatAttachment, ChatQueueItem } from "../ui-types.ts";
+import type { ChatAttachment, ChatQueueItem, UploadedFileEntry } from "../ui-types.ts";
+import { renderUploadedFiles } from "./chat-uploaded-files.ts";
 import { renderMarkdownSidebar } from "./markdown-sidebar.ts";
 import "../components/resizable-divider.ts";
 
@@ -68,6 +69,15 @@ export type ChatProps = {
   // Scroll control
   showNewMessages?: boolean;
   onScrollToBottom?: () => void;
+  // Uploaded files sidebar
+  agentId?: string;
+  uploadedFiles?: UploadedFileEntry[];
+  checkedFilePaths?: Map<string, Set<string>>;
+  uploadingFiles?: boolean;
+  onFileToggle?: (workspacePath: string, agentId: string, checked: boolean) => void;
+  onFileDelete?: (fileId: string, agentId: string) => void;
+  onInitiateUpload?: (agentId: string) => void;
+  onLoadUploadedFiles?: (agentId: string) => void;
   // Event handlers
   onRefresh: () => void;
   onToggleFocusMode: () => void;
@@ -336,144 +346,171 @@ export function renderChat(props: ChatProps) {
           : nothing
       }
 
-      <div
-        class="chat-split-container ${sidebarOpen ? "chat-split-container--open" : ""}"
-      >
-        <div
-          class="chat-main"
-          style="flex: ${sidebarOpen ? `0 0 ${splitRatio * 100}%` : "1 1 100%"}"
-        >
-          ${thread}
-        </div>
+      <div class="chat-with-files ${props.agentId ? "chat-with-files--has-panel" : ""}">
+        <!-- Left: main chat column -->
+        <div class="chat-main-col">
+          <div
+            class="chat-split-container ${sidebarOpen ? "chat-split-container--open" : ""}"
+          >
+            <div
+              class="chat-main"
+              style="flex: ${sidebarOpen ? `0 0 ${splitRatio * 100}%` : "1 1 100%"}"
+            >
+              ${thread}
+            </div>
 
-        ${
-          sidebarOpen
-            ? html`
-              <resizable-divider
-                .splitRatio=${splitRatio}
-                @resize=${(e: CustomEvent) => props.onSplitRatioChange?.(e.detail.splitRatio)}
-              ></resizable-divider>
-              <div class="chat-sidebar">
-                ${renderMarkdownSidebar({
-                  content: props.sidebarContent ?? null,
-                  error: props.sidebarError ?? null,
-                  onClose: props.onCloseSidebar!,
-                  onViewRawText: () => {
-                    if (!props.sidebarContent || !props.onOpenSidebar) {
+            ${
+              sidebarOpen
+                ? html`
+                  <resizable-divider
+                    .splitRatio=${splitRatio}
+                    @resize=${(e: CustomEvent) => props.onSplitRatioChange?.(e.detail.splitRatio)}
+                  ></resizable-divider>
+                  <div class="chat-sidebar">
+                    ${renderMarkdownSidebar({
+                      content: props.sidebarContent ?? null,
+                      error: props.sidebarError ?? null,
+                      onClose: props.onCloseSidebar!,
+                      onViewRawText: () => {
+                        if (!props.sidebarContent || !props.onOpenSidebar) {
+                          return;
+                        }
+                        props.onOpenSidebar(`\`\`\`\n${props.sidebarContent}\n\`\`\``);
+                      },
+                    })}
+                  </div>
+                `
+                : nothing
+            }
+          </div>
+
+          ${
+            props.queue.length
+              ? html`
+                <div class="chat-queue" role="status" aria-live="polite">
+                  <div class="chat-queue__title">Queued (${props.queue.length})</div>
+                  <div class="chat-queue__list">
+                    ${props.queue.map(
+                      (item) => html`
+                        <div class="chat-queue__item">
+                          <div class="chat-queue__text">
+                            ${
+                              item.text ||
+                              (item.attachments?.length ? `Image (${item.attachments.length})` : "")
+                            }
+                          </div>
+                          <button
+                            class="btn chat-queue__remove"
+                            type="button"
+                            aria-label="Remove queued message"
+                            @click=${() => props.onQueueRemove(item.id)}
+                          >
+                            ${icons.x}
+                          </button>
+                        </div>
+                      `,
+                    )}
+                  </div>
+                </div>
+              `
+              : nothing
+          }
+
+          ${renderFallbackIndicator(props.fallbackStatus)}
+          ${renderCompactionIndicator(props.compactionStatus)}
+
+          ${
+            props.showNewMessages
+              ? html`
+                <button
+                  class="btn chat-new-messages"
+                  type="button"
+                  @click=${props.onScrollToBottom}
+                >
+                  New messages ${icons.arrowDown}
+                </button>
+              `
+              : nothing
+          }
+
+          <div class="chat-compose">
+            ${renderAttachmentPreview(props)}
+            <div class="chat-compose__row">
+              <label class="field chat-compose__field">
+                <span>Message</span>
+                <textarea
+                  ${ref((el) => el && adjustTextareaHeight(el as HTMLTextAreaElement))}
+                  .value=${props.draft}
+                  dir=${detectTextDirection(props.draft)}
+                  ?disabled=${!props.connected}
+                  @keydown=${(e: KeyboardEvent) => {
+                    if (e.key !== "Enter") {
                       return;
                     }
-                    props.onOpenSidebar(`\`\`\`\n${props.sidebarContent}\n\`\`\``);
-                  },
-                })}
-              </div>
-            `
-            : nothing
-        }
-      </div>
-
-      ${
-        props.queue.length
-          ? html`
-            <div class="chat-queue" role="status" aria-live="polite">
-              <div class="chat-queue__title">Queued (${props.queue.length})</div>
-              <div class="chat-queue__list">
-                ${props.queue.map(
-                  (item) => html`
-                    <div class="chat-queue__item">
-                      <div class="chat-queue__text">
-                        ${
-                          item.text ||
-                          (item.attachments?.length ? `Image (${item.attachments.length})` : "")
-                        }
-                      </div>
-                      <button
-                        class="btn chat-queue__remove"
-                        type="button"
-                        aria-label="Remove queued message"
-                        @click=${() => props.onQueueRemove(item.id)}
-                      >
-                        ${icons.x}
-                      </button>
-                    </div>
-                  `,
-                )}
+                    if (e.isComposing || e.keyCode === 229) {
+                      return;
+                    }
+                    if (e.shiftKey) {
+                      return;
+                    } // Allow Shift+Enter for line breaks
+                    if (!props.connected) {
+                      return;
+                    }
+                    e.preventDefault();
+                    if (canCompose) {
+                      props.onSend();
+                    }
+                  }}
+                  @input=${(e: Event) => {
+                    const target = e.target as HTMLTextAreaElement;
+                    adjustTextareaHeight(target);
+                    props.onDraftChange(target.value);
+                  }}
+                  @paste=${(e: ClipboardEvent) => handlePaste(e, props)}
+                  placeholder=${composePlaceholder}
+                ></textarea>
+              </label>
+              <div class="chat-compose__actions">
+                <button
+                  class="btn"
+                  ?disabled=${!props.connected || (!canAbort && props.sending)}
+                  @click=${canAbort ? props.onAbort : props.onNewSession}
+                >
+                  ${canAbort ? "Stop" : "New session"}
+                </button>
+                <button
+                  class="btn primary"
+                  ?disabled=${!props.connected}
+                  @click=${props.onSend}
+                >
+                  ${isBusy ? "Queue" : "Send"}<kbd class="btn-kbd">↵</kbd>
+                </button>
               </div>
             </div>
-          `
-          : nothing
-      }
-
-      ${renderFallbackIndicator(props.fallbackStatus)}
-      ${renderCompactionIndicator(props.compactionStatus)}
-
-      ${
-        props.showNewMessages
-          ? html`
-            <button
-              class="btn chat-new-messages"
-              type="button"
-              @click=${props.onScrollToBottom}
-            >
-              New messages ${icons.arrowDown}
-            </button>
-          `
-          : nothing
-      }
-
-      <div class="chat-compose">
-        ${renderAttachmentPreview(props)}
-        <div class="chat-compose__row">
-          <label class="field chat-compose__field">
-            <span>Message</span>
-            <textarea
-              ${ref((el) => el && adjustTextareaHeight(el as HTMLTextAreaElement))}
-              .value=${props.draft}
-              dir=${detectTextDirection(props.draft)}
-              ?disabled=${!props.connected}
-              @keydown=${(e: KeyboardEvent) => {
-                if (e.key !== "Enter") {
-                  return;
-                }
-                if (e.isComposing || e.keyCode === 229) {
-                  return;
-                }
-                if (e.shiftKey) {
-                  return;
-                } // Allow Shift+Enter for line breaks
-                if (!props.connected) {
-                  return;
-                }
-                e.preventDefault();
-                if (canCompose) {
-                  props.onSend();
-                }
-              }}
-              @input=${(e: Event) => {
-                const target = e.target as HTMLTextAreaElement;
-                adjustTextareaHeight(target);
-                props.onDraftChange(target.value);
-              }}
-              @paste=${(e: ClipboardEvent) => handlePaste(e, props)}
-              placeholder=${composePlaceholder}
-            ></textarea>
-          </label>
-          <div class="chat-compose__actions">
-            <button
-              class="btn"
-              ?disabled=${!props.connected || (!canAbort && props.sending)}
-              @click=${canAbort ? props.onAbort : props.onNewSession}
-            >
-              ${canAbort ? "Stop" : "New session"}
-            </button>
-            <button
-              class="btn primary"
-              ?disabled=${!props.connected}
-              @click=${props.onSend}
-            >
-              ${isBusy ? "Queue" : "Send"}<kbd class="btn-kbd">↵</kbd>
-            </button>
           </div>
         </div>
+
+        <!-- Right: uploaded files panel -->
+        ${
+          props.agentId
+            ? html`<div class="chat-files-col">
+                ${renderUploadedFiles({
+                  agentId: props.agentId,
+                  files: props.uploadedFiles ?? [],
+                  checkedPaths: props.checkedFilePaths?.get(props.agentId) ?? new Set(),
+                  uploading: props.uploadingFiles ?? false,
+                  onToggle: (path, checked) => props.onFileToggle?.(path, props.agentId!, checked),
+                  onDelete: (fileId, agentId) => props.onFileDelete?.(fileId, agentId),
+                  onAddFiles: () => {
+                    props.onInitiateUpload?.(props.agentId!);
+                    if (props.onLoadUploadedFiles && props.agentId) {
+                      props.onLoadUploadedFiles(props.agentId);
+                    }
+                  },
+                })}
+              </div>`
+            : nothing
+        }
       </div>
     </section>
   `;
